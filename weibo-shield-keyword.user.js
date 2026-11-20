@@ -655,6 +655,74 @@
             .weibo-shield-toast .wb-toast-text {
                 white-space: nowrap;
             }
+
+            /* Pill Switch & Status Bar (Plan A) */
+            .weibo-shield-autorenew-bar {
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                gap: 10px;
+                margin-top: 6px;
+                padding: 5px 14px;
+                border-radius: 9999px;
+                background: rgba(147, 147, 147, 0.08);
+                border: 1px solid rgba(147, 147, 147, 0.14);
+                font-size: 12.5px;
+                line-height: 1;
+                color: #838383;
+                user-select: none;
+            }
+            .weibo-shield-autorenew-toggle {
+                display: inline-flex;
+                align-items: center;
+                gap: 7px;
+                cursor: pointer;
+                color: inherit;
+                font-weight: 500;
+            }
+            .weibo-shield-switch {
+                position: relative;
+                width: 30px;
+                height: 17px;
+                border-radius: 9999px;
+                background-color: #d2d2d7;
+                transition: background-color 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+                display: inline-block;
+                flex-shrink: 0;
+            }
+            .weibo-shield-switch.is-checked {
+                background-color: #ff8200;
+            }
+            .weibo-shield-switch-thumb {
+                position: absolute;
+                top: 2px;
+                left: 2px;
+                width: 13px;
+                height: 13px;
+                border-radius: 50%;
+                background-color: #ffffff;
+                box-shadow: 0 1px 3px rgba(0, 0, 0, 0.22);
+                transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+            }
+            .weibo-shield-switch.is-checked .weibo-shield-switch-thumb {
+                transform: translateX(13px);
+            }
+            .weibo-shield-autorenew-title {
+                color: #555555;
+                transition: color 0.15s ease;
+            }
+            .weibo-shield-autorenew-toggle.is-checked .weibo-shield-autorenew-title {
+                color: #ff8200;
+            }
+            .weibo-shield-autorenew-divider {
+                width: 1px;
+                height: 11px;
+                background-color: rgba(147, 147, 147, 0.28);
+            }
+            .weibo-shield-autorenew-status {
+                color: #939393;
+                font-size: 12px;
+            }
         `;
         (document.head || document.documentElement).appendChild(style);
     }
@@ -839,6 +907,8 @@
             return;
         }
 
+        injectStyles();
+
         const oldModal = document.getElementById(MODAL_ID);
         if (oldModal && oldModal.parentNode) {
             oldModal.parentNode.removeChild(oldModal);
@@ -864,64 +934,52 @@
         buttonGroup.style.gap = '10px';
         buttonGroup.style.margin = '10px auto';
 
-        // 自动续命状态与开关条
+        // 自动续命状态与滑块开关条（方案 A：精致圆角滑块 + 极简文案）
         const autoRenewBar = document.createElement('div');
-        autoRenewBar.style.display = 'inline-flex';
-        autoRenewBar.style.alignItems = 'center';
-        autoRenewBar.style.justifyContent = 'center';
-        autoRenewBar.style.flexWrap = 'wrap';
-        autoRenewBar.style.gap = '10px';
-        autoRenewBar.style.marginTop = '4px';
-        autoRenewBar.style.padding = '6px 14px';
-        autoRenewBar.style.borderRadius = '9999px';
-        autoRenewBar.style.backgroundColor = 'rgba(255, 130, 0, 0.08)';
-        autoRenewBar.style.fontSize = '12px';
-        autoRenewBar.style.color = '#666';
+        autoRenewBar.className = 'weibo-shield-autorenew-bar';
 
-        const autoRenewLabel = document.createElement('label');
-        autoRenewLabel.style.display = 'inline-flex';
-        autoRenewLabel.style.alignItems = 'center';
-        autoRenewLabel.style.gap = '5px';
-        autoRenewLabel.style.cursor = 'pointer';
-        autoRenewLabel.style.fontWeight = '500';
-        autoRenewLabel.style.color = '#333';
-        autoRenewLabel.title = '默认开启：距离上次续命超过 20 天时在后台自动静默续命（每 15 天最多自动执行 1 次）';
+        const autoRenewToggle = document.createElement('div');
+        autoRenewToggle.className = 'weibo-shield-autorenew-toggle';
+        autoRenewToggle.setAttribute('role', 'switch');
+        autoRenewToggle.title = '默认开启：距离上次续命超过 20 天时在后台自动静默续命（每 15 天最多自动执行 1 次）';
 
-        const autoRenewCheckbox = document.createElement('input');
-        autoRenewCheckbox.type = 'checkbox';
-        autoRenewCheckbox.checked = isAutoRenewEnabled();
-        autoRenewCheckbox.style.cursor = 'pointer';
-        autoRenewCheckbox.style.accentColor = '#ff8200';
-        autoRenewCheckbox.style.margin = '0';
+        const switchTrack = document.createElement('span');
+        switchTrack.className = 'weibo-shield-switch';
+        const switchThumb = document.createElement('span');
+        switchThumb.className = 'weibo-shield-switch-thumb';
+        switchTrack.appendChild(switchThumb);
 
         const autoRenewTitleText = document.createElement('span');
-        autoRenewTitleText.innerText = '自动「续命」（满 20 天后台静默续期）';
+        autoRenewTitleText.className = 'weibo-shield-autorenew-title';
+        autoRenewTitleText.innerText = '自动续命';
 
-        autoRenewLabel.appendChild(autoRenewCheckbox);
-        autoRenewLabel.appendChild(autoRenewTitleText);
+        autoRenewToggle.appendChild(switchTrack);
+        autoRenewToggle.appendChild(autoRenewTitleText);
 
         const autoRenewDivider = document.createElement('span');
-        autoRenewDivider.innerText = '·';
-        autoRenewDivider.style.color = '#ccc';
+        autoRenewDivider.className = 'weibo-shield-autorenew-divider';
 
         const autoRenewStatusText = document.createElement('span');
-        autoRenewStatusText.style.color = '#888';
+        autoRenewStatusText.className = 'weibo-shield-autorenew-status';
 
         const refreshStatusText = () => {
-            autoRenewCheckbox.checked = isAutoRenewEnabled();
+            const enabled = isAutoRenewEnabled();
+            autoRenewToggle.setAttribute('aria-checked', String(enabled));
+            autoRenewToggle.classList.toggle('is-checked', enabled);
+            switchTrack.classList.toggle('is-checked', enabled);
             autoRenewStatusText.innerText = formatAutoRenewStatus(getLastRenewTimestamp());
         };
         statusStripUpdater = refreshStatusText;
         refreshStatusText();
 
-        autoRenewCheckbox.addEventListener('change', () => {
-            const enabled = autoRenewCheckbox.checked;
-            setAutoRenewEnabled(enabled);
+        autoRenewToggle.addEventListener('click', () => {
+            const nextState = !isAutoRenewEnabled();
+            setAutoRenewEnabled(nextState);
             refreshStatusText();
-            showSuccessMessage(enabled ? '已开启自动续命' : '已关闭自动续命');
+            showSuccessMessage(nextState ? '已开启自动续命' : '已关闭自动续命');
         });
 
-        autoRenewBar.appendChild(autoRenewLabel);
+        autoRenewBar.appendChild(autoRenewToggle);
         autoRenewBar.appendChild(autoRenewDivider);
         autoRenewBar.appendChild(autoRenewStatusText);
 

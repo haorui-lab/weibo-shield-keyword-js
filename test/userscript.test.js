@@ -35,7 +35,7 @@ test('Tampermonkey UserScript 元数据头部格式完整规范', () => {
     assert.match(scriptContent, /@grant\s+unsafeWindow/);
 });
 
-test('核心功能按钮、自动续命与毛玻璃 Toast 样式均已声明', () => {
+test('核心功能按钮、自动续命滑块与毛玻璃 Toast 样式均已声明', () => {
     assert.ok(scriptContent.includes('https://weibo.com/ajax/setting/getFilteredWords'));
     assert.ok(scriptContent.includes('https://weibo.com/ajax/setting/updateBlockWords'));
     assert.ok(scriptContent.includes('https://weibo.com/ajax/setting/deleteFilteredWords'));
@@ -43,7 +43,8 @@ test('核心功能按钮、自动续命与毛玻璃 Toast 样式均已声明', (
     assert.ok(scriptContent.includes('一键「导出」'));
     assert.ok(scriptContent.includes('一键「导入」'));
     assert.ok(scriptContent.includes('一键「清空」'));
-    assert.ok(scriptContent.includes('自动「续命」'));
+    assert.ok(scriptContent.includes('自动续命'));
+    assert.ok(scriptContent.includes('.weibo-shield-switch'));
     assert.ok(scriptContent.includes('.weibo-shield-toast'));
     assert.ok(scriptContent.includes('backdrop-filter: blur(16px)'));
 });
