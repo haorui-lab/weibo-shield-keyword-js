@@ -1,0 +1,28 @@
+{
+  "name": "weibo-shield-keyword-js",
+  "version": "2.0.0",
+  "description": "Tampermonkey / Violentmonkey userscript for Weibo shield keywords management: one-click renew, import, export, and clear",
+  "type": "module",
+  "scripts": {
+    "test": "node test/userscript.test.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/haorui-lab/weibo-shield-keyword-js.git"
+  },
+  "keywords": [
+    "userscript",
+    "tampermonkey",
+    "violentmonkey",
+    "weibo",
+    "shield",
+    "keyword",
+    "filter"
+  ],
+  "author": "haorui",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/haorui-lab/weibo-shield-keyword-js/issues"
+  },
+  "homepage": "https://github.com/haorui-lab/weibo-shield-keyword-js#readme"
+}
