@@ -1,11 +1,11 @@
 # Weibo ShieldKeyword (`weibo-shield-keyword-js`)
 
 <p align="center">
-  <strong>面向新浪微博 (Weibo.com) 的轻量级屏蔽词增强用户脚本 —— 提供屏蔽关键词一键续期（续命）、一键批量导入、一键导出备份与一键清空。</strong>
+  <strong>面向新浪微博 (Weibo.com) 的轻量级屏蔽词增强用户脚本 —— 提供屏蔽关键词自动后台续命、一键续期（续命）、一键批量导入、一键导出备份与一键清空。</strong>
 </p>
 
 <p align="center">
-  <a href="https://github.com/haorui-lab/weibo-shield-keyword-js/releases"><img src="https://img.shields.io/badge/version-2.0.0-orange.svg?style=flat-square" alt="Version"></a>
+  <a href="https://github.com/haorui-lab/weibo-shield-keyword-js/releases"><img src="https://img.shields.io/badge/version-2.1.0-orange.svg?style=flat-square" alt="Version"></a>
   <a href="./package.json"><img src="https://img.shields.io/badge/license-MIT-green.svg?style=flat-square" alt="License"></a>
   <a href="https://www.tampermonkey.net/"><img src="https://img.shields.io/badge/Tampermonkey-支持-black?style=flat-square&logo=tampermonkey" alt="Tampermonkey"></a>
   <a href="https://violentmonkey.github.io/"><img src="https://img.shields.io/badge/Violentmonkey-支持-orange?style=flat-square" alt="Violentmonkey"></a>
@@ -30,7 +30,11 @@
 
 ## ✨ 核心特性
 
-- 🔄 **一键「续命」（批量续期）**：
+- ⚡ **自动「续命」（全站后台静默巡检）**：
+  - **默认开启**：日常打开任意微博页面时自动在后台静默检查，无需专门进入设置页面；
+  - **克制防打扰策略**：每 **15 天**最多自动执行 1 次；当距离上次续命超过 **20 天**（或首次安装未记录续命时间）时，自动在后台静默续期全部屏蔽词；
+  - **跨标签页互斥锁 + 轻微毛玻璃通知**：多标签页不重复触发，后台完成后仅以顶部深色毛玻璃小胶囊轻提示 `已自动续命 N 个屏蔽词`，绝不刷新或打断当前浏览。
+- 🔄 **一键「续命」（手动批量续期）**：
   - 自动拉取当前全部已设置的屏蔽关键词，按安全间隔逐一重新提交更新，一键刷新所有词条有效期；
   - 内置可视化进度条与实时计数提示，完成后自动刷新页面展示最新状态。
 - 📤 **一键「导出」（剪贴板备份）**：
@@ -99,10 +103,14 @@ https://raw.githubusercontent.com/haorui-lab/weibo-shield-keyword-js/main/weibo-
 
 ```javascript
 const CONFIG = {
-    requestDelayMs: 500,        // 批量请求间隔（毫秒），默认 500ms 防止触发微博接口频控
-    scanDebounceMs: 100,        // SPA DOM 变更防抖扫描间隔（毫秒）
-    toastSuccessDurationMs: 3000, // 成功提示气泡显示时长（毫秒）
-    toastErrorDurationMs: 5000    // 错误提示气泡显示时长（毫秒）
+    requestDelayMs: 500,            // 批量请求间隔（毫秒），默认 500ms 防止触发微博接口频控
+    autoRenewDelayMs: 5000,         // 页面打开后触发后台自动续命巡检的延迟（毫秒），避开首屏加载高峰
+    autoRenewMinIntervalDays: 15,   // 自动续命最小冷却周期（天）：每 15 天最多自动执行 1 次
+    autoRenewTriggerDays: 20,       // 自动续命触发阈值（天）：距离上次续命超过 20 天自动跑一轮
+    autoRenewLockTtlMs: 600000,     // 跨标签页并发锁超时时间（毫秒）
+    scanDebounceMs: 100,            // SPA DOM 变更防抖扫描间隔（毫秒）
+    toastSuccessDurationMs: 2600,   // 成功提示气泡显示时长（毫秒）
+    toastErrorDurationMs: 4200      // 错误提示气泡显示时长（毫秒）
 };
 ```
 

@@ -1,7 +1,7 @@
 {
   "name": "weibo-shield-keyword-js",
-  "version": "2.0.0",
-  "description": "Tampermonkey / Violentmonkey userscript for Weibo shield keywords management: one-click renew, import, export, and clear",
+  "version": "2.1.0",
+  "description": "Tampermonkey / Violentmonkey userscript for Weibo shield keywords management: auto renew, one-click renew, import, export, and clear",
   "type": "module",
   "scripts": {
     "test": "node test/userscript.test.js"

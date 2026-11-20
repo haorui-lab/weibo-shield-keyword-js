@@ -3,9 +3,9 @@
 // @name:zh-CN   Weibo ShieldKeyword - 微博屏蔽词增强助手
 // @name:en      Weibo ShieldKeyword - Keyword Shield Manager
 // @namespace    https://github.com/haorui-lab/weibo-shield-keyword-js
-// @version      2.0.0
-// @description  为微博屏蔽词提供一键式管理 ———— 一键续期（续命）、一键导入、一键导出、一键清空。注意：受限于微博功能限制，非会员无法使用屏蔽词功能。
-// @description:en One-click management for Weibo shield keywords — batch renew, import, export, and clear.
+// @version      2.1.0
+// @description  为微博屏蔽词提供一键式与全自动管理 ———— 自动后台续命、一键续期（续命）、一键导入、一键导出、一键清空。注意：受限于微博功能限制，非会员无法使用屏蔽词功能。
+// @description:en One-click and automatic management for Weibo shield keywords — auto renew, batch renew, import, export, and clear.
 // @author       haorui
 // @license      MIT
 // @homepageURL  https://github.com/haorui-lab/weibo-shield-keyword-js
@@ -27,18 +27,33 @@
     // Configuration
     // ==========================================
     const CONFIG = {
-        requestDelayMs: 500,        // 批量请求间隔（毫秒），防止触发微博频控
-        scanDebounceMs: 100,        // SPA DOM 变更防抖扫描间隔（毫秒）
-        toastSuccessDurationMs: 3000,
-        toastErrorDurationMs: 5000
+        requestDelayMs: 500,            // 批量请求间隔（毫秒），防止触发微博频控
+        autoRenewDelayMs: 5000,         // 页面打开后触发后台自动续命巡检的延迟（毫秒），避开首屏加载高峰
+        autoRenewMinIntervalDays: 15,   // 自动续命最小冷却周期（天）：每 15 天最多自动执行 1 次
+        autoRenewTriggerDays: 20,       // 自动续命触发阈值（天）：距离上次续命超过 20 天自动跑一轮
+        autoRenewLockTtlMs: 10 * 60 * 1000, // 跨标签页并发锁超时时间（10 分钟）
+        scanDebounceMs: 100,            // SPA DOM 变更防抖扫描间隔（毫秒）
+        toastSuccessDurationMs: 2600,
+        toastErrorDurationMs: 4200
     };
 
+    const DAY_MS = 24 * 60 * 60 * 1000;
     const CONTAINER_ID = 'weibo-shield-keyword-helper';
     const MODAL_ID = 'weibo-shield-keyword-modal';
+    const STYLE_ID = 'weibo-shield-keyword-styles';
     const TARGET_SELECTOR = '.wbpro-setup__line2';
     const RENEW_FLAG_KEY = 'weiboRenewComplete';
+    const STORAGE_KEYS = {
+        autoRenewEnabled: 'weiboShieldAutoRenewEnabled',
+        lastRenewAt: 'weiboShieldLastRenewAt',
+        lastAutoRenewAt: 'weiboShieldLastAutoRenewAt',
+        autoRenewLock: 'weiboShieldAutoRenewLock'
+    };
 
     let isBatchOperating = false;
+    let activeToast = null;
+    let activeToastTimer = null;
+    let statusStripUpdater = null;
 
     // ==========================================
     // 1. Pure Utility Functions
@@ -77,7 +92,7 @@
     }
 
     /**
-     * 解析并去重用户输入的关键词文本（支持 \n 與 \r\n）
+     * 解析并去重用户输入的关键词文本（支持 \n 与 \r\n）
      * @param {string} rawText
      * @returns {string[]}
      */
@@ -176,9 +191,182 @@
         return headers;
     }
 
+    /**
+     * 判定当前是否满足「自动续命」触发条件（纯函数）
+     * 规则：
+     * 1. autoRenewEnabled 默认开启（未禁用时为 true）
+     * 2. 每 15 天最多自动执行 1 次（距 lastAutoRenewAt 不足 15 天绝不触发）
+     * 3. 距离上次续命（含手动/自动）超过 20 天，或从未记录过续命时间，自动跑一轮
+     *
+     * @param {object} state
+     * @param {boolean} [state.enabled=true]
+     * @param {number} [state.lastRenewAt=0]
+     * @param {number} [state.lastAutoRenewAt=0]
+     * @param {number} [state.now=Date.now()]
+     * @param {number} [state.minIntervalDays=CONFIG.autoRenewMinIntervalDays]
+     * @param {number} [state.triggerDays=CONFIG.autoRenewTriggerDays]
+     * @returns {{ shouldRun: boolean, reason: string, daysSinceLastRenew: number|null, daysSinceLastAuto: number|null }}
+     */
+    function evaluateAutoRenewDecision(state = {}) {
+        const {
+            enabled = true,
+            lastRenewAt = 0,
+            lastAutoRenewAt = 0,
+            now = Date.now(),
+            minIntervalDays = CONFIG.autoRenewMinIntervalDays,
+            triggerDays = CONFIG.autoRenewTriggerDays
+        } = state;
+
+        const validLastAuto = Number(lastAutoRenewAt) > 0 ? Number(lastAutoRenewAt) : 0;
+        const validLastRenew = Math.max(
+            Number(lastRenewAt) > 0 ? Number(lastRenewAt) : 0,
+            validLastAuto
+        );
+
+        const daysSinceLastAuto = validLastAuto > 0 ? (now - validLastAuto) / DAY_MS : null;
+        const daysSinceLastRenew = validLastRenew > 0 ? (now - validLastRenew) / DAY_MS : null;
+
+        if (!enabled) {
+            return {
+                shouldRun: false,
+                reason: 'disabled',
+                daysSinceLastRenew,
+                daysSinceLastAuto
+            };
+        }
+
+        // 硬性上限：每 15 天最多自动执行 1 次
+        if (daysSinceLastAuto !== null && daysSinceLastAuto < minIntervalDays) {
+            return {
+                shouldRun: false,
+                reason: 'cooldown_15d',
+                daysSinceLastRenew,
+                daysSinceLastAuto
+            };
+        }
+
+        // 从未执行过续命：首次自动巡检直接执行一轮并建立基准时间戳
+        if (daysSinceLastRenew === null) {
+            return {
+                shouldRun: true,
+                reason: 'first_run',
+                daysSinceLastRenew: null,
+                daysSinceLastAuto
+            };
+        }
+
+        // 距离上次续命超过 20 天：自动跑一轮
+        if (daysSinceLastRenew >= triggerDays) {
+            return {
+                shouldRun: true,
+                reason: 'overdue_20d',
+                daysSinceLastRenew,
+                daysSinceLastAuto
+            };
+        }
+
+        return {
+            shouldRun: false,
+            reason: 'within_20d',
+            daysSinceLastRenew,
+            daysSinceLastAuto
+        };
+    }
+
+    /**
+     * 格式化上次续命状态文案（供设置面板显示）
+     * @param {number} lastRenewAt
+     * @param {number} [now=Date.now()]
+     * @returns {string}
+     */
+    function formatAutoRenewStatus(lastRenewAt, now = Date.now()) {
+        const ts = Number(lastRenewAt);
+        if (!ts || ts <= 0 || Number.isNaN(ts)) {
+            return '尚未记录续命时间（将在后台自动巡检）';
+        }
+        const diffMs = Math.max(0, now - ts);
+        const diffDays = Math.floor(diffMs / DAY_MS);
+        const date = new Date(ts);
+        const yyyy = date.getFullYear();
+        const mm = String(date.getMonth() + 1).padStart(2, '0');
+        const dd = String(date.getDate()).padStart(2, '0');
+        const dateStr = `${yyyy}-${mm}-${dd}`;
+
+        if (diffDays === 0) {
+            return `上次续命：今天 (${dateStr})`;
+        }
+        return `上次续命：${diffDays} 天前 (${dateStr})`;
+    }
+
     // ==========================================
-    // 2. Environment & Clipboard Helpers
+    // 2. Environment, Storage & Clipboard Helpers
     // ==========================================
+
+    function isAutoRenewEnabled() {
+        try {
+            const raw = localStorage.getItem(STORAGE_KEYS.autoRenewEnabled);
+            // 默认开启：仅当显式存为 'false' 时才关闭
+            return raw !== 'false';
+        } catch (e) {
+            return true;
+        }
+    }
+
+    function setAutoRenewEnabled(enabled) {
+        try {
+            localStorage.setItem(STORAGE_KEYS.autoRenewEnabled, enabled ? 'true' : 'false');
+        } catch (e) {}
+    }
+
+    function getLastRenewTimestamp() {
+        try {
+            const lastRenew = Number(localStorage.getItem(STORAGE_KEYS.lastRenewAt) || 0);
+            const lastAuto = Number(localStorage.getItem(STORAGE_KEYS.lastAutoRenewAt) || 0);
+            return Math.max(lastRenew || 0, lastAuto || 0);
+        } catch (e) {
+            return 0;
+        }
+    }
+
+    function getLastAutoRenewTimestamp() {
+        try {
+            return Number(localStorage.getItem(STORAGE_KEYS.lastAutoRenewAt) || 0) || 0;
+        } catch (e) {
+            return 0;
+        }
+    }
+
+    function recordRenewTimestamp(isAuto = false, timestamp = Date.now()) {
+        try {
+            const tsStr = String(timestamp);
+            localStorage.setItem(STORAGE_KEYS.lastRenewAt, tsStr);
+            if (isAuto) {
+                localStorage.setItem(STORAGE_KEYS.lastAutoRenewAt, tsStr);
+            }
+        } catch (e) {}
+        if (typeof statusStripUpdater === 'function') {
+            statusStripUpdater();
+        }
+    }
+
+    function acquireAutoRenewLock(now = Date.now()) {
+        try {
+            const existingLock = Number(localStorage.getItem(STORAGE_KEYS.autoRenewLock) || 0);
+            if (existingLock > 0 && (now - existingLock) < CONFIG.autoRenewLockTtlMs) {
+                return false;
+            }
+            localStorage.setItem(STORAGE_KEYS.autoRenewLock, String(now));
+            return true;
+        } catch (e) {
+            return true;
+        }
+    }
+
+    function releaseAutoRenewLock() {
+        try {
+            localStorage.removeItem(STORAGE_KEYS.autoRenewLock);
+        } catch (e) {}
+    }
 
     /**
      * 获取当前微博页面的全局 window 对象（兼容 Tampermonkey 沙箱）
@@ -303,8 +491,15 @@
 
     /**
      * 更新或新增单个屏蔽词（带延迟防频控）
+     * @param {string} keyword
+     * @param {number} currentIndex
+     * @param {number} totalKeywords
+     * @param {HTMLElement|null} progressText
+     * @param {object} [options]
+     * @param {boolean} [options.silent=false] 静默模式下不弹出错误 Toast
      */
-    function updateBlockWord(keyword, currentIndex, totalKeywords, progressText) {
+    function updateBlockWord(keyword, currentIndex, totalKeywords, progressText, options = {}) {
+        const { silent = false } = options;
         return new Promise((resolve, reject) => {
             setTimeout(async () => {
                 try {
@@ -340,7 +535,9 @@
                     if (progressText) {
                         progressText.innerText = `更新失败: ${keyword}（${error.message}）`;
                     }
-                    showErrorMessage(`更新 "${keyword}" 失败: ${error.message}`);
+                    if (!silent) {
+                        showErrorMessage(`更新 "${keyword}" 失败: ${error.message}`);
+                    }
                     reject(error);
                 }
             }, CONFIG.requestDelayMs);
@@ -392,87 +589,153 @@
     }
 
     // ==========================================
-    // 4. UI Notification & Toolbar Injection
+    // 4. UI Notification (Weibo Dark Frosted-Glass Toast) & Toolbar Injection
     // ==========================================
 
+    const TOAST_ICONS = {
+        success: `
+            <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="3.5 8.5 6.5 11.5 12.5 5"></polyline>
+            </svg>
+        `,
+        error: `
+            <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <line x1="11.5" y1="4.5" x2="4.5" y2="11.5"></line>
+                <line x1="4.5" y1="4.5" x2="11.5" y2="11.5"></line>
+            </svg>
+        `
+    };
+
+    function injectStyles() {
+        if (typeof document === 'undefined' || document.getElementById(STYLE_ID)) return;
+
+        const style = document.createElement('style');
+        style.id = STYLE_ID;
+        style.textContent = `
+            /* Floating Toast Notification matching Weibo dark frosted glass style (aligned with Weibo FollowFlow) */
+            .weibo-shield-toast {
+                position: fixed;
+                top: 76px;
+                left: 50%;
+                transform: translate(-50%, -10px);
+                background: rgba(30, 30, 30, 0.9);
+                backdrop-filter: blur(16px);
+                -webkit-backdrop-filter: blur(16px);
+                color: #ffffff;
+                font-size: 13.5px;
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+                font-weight: 500;
+                line-height: 1.4;
+                padding: 7px 18px;
+                border-radius: 9999px;
+                box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18), 0 2px 6px rgba(0, 0, 0, 0.08);
+                border: 1px solid rgba(255, 255, 255, 0.12);
+                display: inline-flex;
+                align-items: center;
+                gap: 6px;
+                z-index: 999999;
+                pointer-events: none;
+                opacity: 0;
+                transition: opacity 0.22s cubic-bezier(0.16, 1, 0.3, 1), transform 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+                user-select: none;
+            }
+            .weibo-shield-toast.wb-toast-show {
+                opacity: 1;
+                transform: translate(-50%, 0);
+            }
+            .weibo-shield-toast .wb-toast-icon {
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                color: #00ba7c;
+            }
+            .weibo-shield-toast.wb-toast-error .wb-toast-icon {
+                color: #f4212e;
+            }
+            .weibo-shield-toast .wb-toast-text {
+                white-space: nowrap;
+            }
+        `;
+        (document.head || document.documentElement).appendChild(style);
+    }
+
     /**
-     * 通用顶部悬浮气泡提示（Toast）
+     * 轻微毛玻璃悬浮胶囊提示（与 weibo-follow-flow 视觉风格一致）
      */
     function showToast(message, options = {}) {
+        if (typeof document === 'undefined') return;
+        injectStyles();
+
         const {
-            backgroundColor = '#4CAF50',
-            durationMs = CONFIG.toastSuccessDurationMs,
-            icon = null
+            type = 'success',
+            durationMs = type === 'error' ? CONFIG.toastErrorDurationMs : CONFIG.toastSuccessDurationMs
         } = options;
 
-        const toast = document.createElement('div');
-        toast.style.position = 'fixed';
-        toast.style.top = '20px';
-        toast.style.left = '50%';
-        toast.style.transform = 'translateX(-50%)';
-        toast.style.backgroundColor = backgroundColor;
-        toast.style.color = '#ffffff';
-        toast.style.padding = '12px 24px';
-        toast.style.borderRadius = '30px';
-        toast.style.boxShadow = '0 4px 12px rgba(0, 0, 0, 0.15)';
-        toast.style.zIndex = '10001';
-        toast.style.fontFamily = "'Helvetica Neue', Arial, sans-serif";
-        toast.style.fontSize = '15px';
-        toast.style.fontWeight = 'bold';
-        toast.style.display = 'flex';
-        toast.style.alignItems = 'center';
-        toast.style.justifyContent = 'center';
-        toast.style.opacity = '0';
-        toast.style.transition = 'opacity 0.3s ease-in-out';
-        toast.style.pointerEvents = 'none';
-
-        if (icon) {
-            const iconSpan = document.createElement('span');
-            iconSpan.innerText = icon;
-            iconSpan.style.marginRight = '8px';
-            iconSpan.style.fontSize = '18px';
-            toast.appendChild(iconSpan);
+        if (activeToast) {
+            clearTimeout(activeToastTimer);
+            if (activeToast.parentElement) {
+                activeToast.parentElement.removeChild(activeToast);
+            }
+            activeToast = null;
         }
 
+        const toast = document.createElement('div');
+        toast.className = `weibo-shield-toast${type === 'error' ? ' wb-toast-error' : ''}`;
+        toast.setAttribute('role', 'alert');
+
+        const iconSpan = document.createElement('span');
+        iconSpan.className = 'wb-toast-icon';
+        iconSpan.innerHTML = type === 'error' ? TOAST_ICONS.error : TOAST_ICONS.success;
+
         const textSpan = document.createElement('span');
-        textSpan.innerText = message;
+        textSpan.className = 'wb-toast-text';
+        textSpan.textContent = message;
+
+        toast.appendChild(iconSpan);
         toast.appendChild(textSpan);
 
-        document.body.appendChild(toast);
+        (document.body || document.documentElement).appendChild(toast);
+        activeToast = toast;
 
-        setTimeout(() => {
-            toast.style.opacity = '1';
-        }, 50);
+        const scheduleShow = typeof requestAnimationFrame === 'function'
+            ? requestAnimationFrame
+            : (fn) => setTimeout(fn, 16);
 
-        setTimeout(() => {
-            toast.style.opacity = '0';
+        scheduleShow(() => {
+            toast.classList.add('wb-toast-show');
+        });
+
+        activeToastTimer = setTimeout(() => {
+            toast.classList.remove('wb-toast-show');
             setTimeout(() => {
-                if (toast.parentNode) {
-                    toast.parentNode.removeChild(toast);
+                if (toast.parentElement) {
+                    toast.parentElement.removeChild(toast);
                 }
-            }, 300);
+                if (activeToast === toast) {
+                    activeToast = null;
+                }
+            }, 250);
         }, durationMs);
     }
 
     function showSuccessMessage(message) {
         showToast(message, {
-            backgroundColor: '#4CAF50',
+            type: 'success',
             durationMs: CONFIG.toastSuccessDurationMs
         });
     }
 
     function showErrorMessage(message) {
         showToast(message, {
-            backgroundColor: '#ff4444',
+            type: 'error',
             durationMs: CONFIG.toastErrorDurationMs
         });
     }
 
     function showCompletionMessage() {
-        showToast('续命完成！', {
-            backgroundColor: '#4CAF50',
-            durationMs: CONFIG.toastSuccessDurationMs,
-            icon: '✓'
+        showToast('屏蔽词续命完成', {
+            type: 'success',
+            durationMs: CONFIG.toastSuccessDurationMs
         });
     }
 
@@ -488,6 +751,7 @@
         if (modal && modal.parentNode) {
             modal.parentNode.removeChild(modal);
         }
+        statusStripUpdater = null;
     }
 
     /**
@@ -563,7 +827,7 @@
     }
 
     /**
-     * 向页面注入工具栏按钮和导入弹窗
+     * 向页面注入工具栏按钮、自动续命开关条和导入弹窗
      */
     function mountToolbar() {
         const targetElement = document.querySelector(TARGET_SELECTOR);
@@ -599,6 +863,67 @@
         buttonGroup.style.flexWrap = 'wrap';
         buttonGroup.style.gap = '10px';
         buttonGroup.style.margin = '10px auto';
+
+        // 自动续命状态与开关条
+        const autoRenewBar = document.createElement('div');
+        autoRenewBar.style.display = 'inline-flex';
+        autoRenewBar.style.alignItems = 'center';
+        autoRenewBar.style.justifyContent = 'center';
+        autoRenewBar.style.flexWrap = 'wrap';
+        autoRenewBar.style.gap = '10px';
+        autoRenewBar.style.marginTop = '4px';
+        autoRenewBar.style.padding = '6px 14px';
+        autoRenewBar.style.borderRadius = '9999px';
+        autoRenewBar.style.backgroundColor = 'rgba(255, 130, 0, 0.08)';
+        autoRenewBar.style.fontSize = '12px';
+        autoRenewBar.style.color = '#666';
+
+        const autoRenewLabel = document.createElement('label');
+        autoRenewLabel.style.display = 'inline-flex';
+        autoRenewLabel.style.alignItems = 'center';
+        autoRenewLabel.style.gap = '5px';
+        autoRenewLabel.style.cursor = 'pointer';
+        autoRenewLabel.style.fontWeight = '500';
+        autoRenewLabel.style.color = '#333';
+        autoRenewLabel.title = '默认开启：距离上次续命超过 20 天时在后台自动静默续命（每 15 天最多自动执行 1 次）';
+
+        const autoRenewCheckbox = document.createElement('input');
+        autoRenewCheckbox.type = 'checkbox';
+        autoRenewCheckbox.checked = isAutoRenewEnabled();
+        autoRenewCheckbox.style.cursor = 'pointer';
+        autoRenewCheckbox.style.accentColor = '#ff8200';
+        autoRenewCheckbox.style.margin = '0';
+
+        const autoRenewTitleText = document.createElement('span');
+        autoRenewTitleText.innerText = '自动「续命」（满 20 天后台静默续期）';
+
+        autoRenewLabel.appendChild(autoRenewCheckbox);
+        autoRenewLabel.appendChild(autoRenewTitleText);
+
+        const autoRenewDivider = document.createElement('span');
+        autoRenewDivider.innerText = '·';
+        autoRenewDivider.style.color = '#ccc';
+
+        const autoRenewStatusText = document.createElement('span');
+        autoRenewStatusText.style.color = '#888';
+
+        const refreshStatusText = () => {
+            autoRenewCheckbox.checked = isAutoRenewEnabled();
+            autoRenewStatusText.innerText = formatAutoRenewStatus(getLastRenewTimestamp());
+        };
+        statusStripUpdater = refreshStatusText;
+        refreshStatusText();
+
+        autoRenewCheckbox.addEventListener('change', () => {
+            const enabled = autoRenewCheckbox.checked;
+            setAutoRenewEnabled(enabled);
+            refreshStatusText();
+            showSuccessMessage(enabled ? '已开启自动续命' : '已关闭自动续命');
+        });
+
+        autoRenewBar.appendChild(autoRenewLabel);
+        autoRenewBar.appendChild(autoRenewDivider);
+        autoRenewBar.appendChild(autoRenewStatusText);
 
         const progressText = document.createElement('div');
         progressText.style.marginTop = '10px';
@@ -712,6 +1037,7 @@
         progressBar.appendChild(progressFill);
         buttonContainer.appendChild(vipNotice);
         buttonContainer.appendChild(buttonGroup);
+        buttonContainer.appendChild(autoRenewBar);
         buttonContainer.appendChild(progressText);
         buttonContainer.appendChild(progressBar);
 
@@ -748,7 +1074,7 @@
                 }
 
                 await copyToClipboard(keywords.join('\n'));
-                showSuccessMessage(`已成功导出 ${keywords.length} 个屏蔽词到剪贴板！`);
+                showSuccessMessage(`已导出 ${keywords.length} 个屏蔽词到剪贴板`);
             } catch (error) {
                 console.error('[Weibo-ShieldKeyword] 导出失败:', error);
                 showErrorMessage(`导出失败: ${error.message}`);
@@ -789,6 +1115,7 @@
                     progressFill.style.width = `${((i + 1) / totalKeywords) * 100}%`;
                 }
 
+                recordRenewTimestamp(false);
                 localStorage.setItem(RENEW_FLAG_KEY, 'true');
                 window.location.reload();
             } catch (error) {
@@ -844,7 +1171,8 @@
                     await updateBlockWord(keywords[i], i + 1, keywords.length, importProgress);
                 }
 
-                showSuccessMessage(`成功导入 ${keywords.length} 个屏蔽词！`);
+                recordRenewTimestamp(false);
+                showSuccessMessage(`已导入 ${keywords.length} 个屏蔽词`);
                 isBatchOperating = false;
                 resetModal();
                 window.location.reload();
@@ -895,7 +1223,7 @@
                     progressFill.style.width = `${((i + 1) / totalKeywords) * 100}%`;
                 }
 
-                showSuccessMessage('所有屏蔽词已清空！');
+                showSuccessMessage('所有屏蔽词已清空');
                 window.location.reload();
             } catch (error) {
                 console.error('[Weibo-ShieldKeyword] 清空失败:', error);
@@ -910,7 +1238,67 @@
     }
 
     // ==========================================
-    // 5. Lifecycle & SPA Route Observer
+    // 5. Background Auto-Renew Engine
+    // ==========================================
+
+    /**
+     * 后台静默自动续命巡检：
+     * - 默认开启
+     * - 每 15 天最多自动执行 1 次
+     * - 距离上次续命超过 20 天（或首次运行）时自动跑一轮
+     * - 静默执行不刷新页面，完成后以毛玻璃小胶囊轻提示
+     */
+    async function maybeRunAutoRenew() {
+        if (isBatchOperating) return;
+
+        const decision = evaluateAutoRenewDecision({
+            enabled: isAutoRenewEnabled(),
+            lastRenewAt: getLastRenewTimestamp(),
+            lastAutoRenewAt: getLastAutoRenewTimestamp(),
+            now: Date.now()
+        });
+
+        if (!decision.shouldRun) {
+            return;
+        }
+
+        // 必须处于已登录状态（存在 XSRF-TOKEN）且为 VIP 用户
+        if (!getXsrfToken() || !isVipUser()) {
+            return;
+        }
+
+        // 获取跨标签页互斥锁，防止同时打开多个微博标签页并发执行
+        if (!acquireAutoRenewLock()) {
+            return;
+        }
+
+        try {
+            isBatchOperating = true;
+            const cards = await fetchFilteredWords();
+            const keywords = extractKeywordsFromCards(cards);
+
+            if (keywords.length === 0) {
+                // 没有设置任何屏蔽词时，记录一次巡检时间戳避免每次打开页面都空查接口
+                recordRenewTimestamp(true);
+                return;
+            }
+
+            for (let i = 0; i < keywords.length; i++) {
+                await updateBlockWord(keywords[i], i + 1, keywords.length, null, { silent: true });
+            }
+
+            recordRenewTimestamp(true);
+            showSuccessMessage(`已自动续命 ${keywords.length} 个屏蔽词`);
+        } catch (error) {
+            console.warn('[Weibo-ShieldKeyword] 后台自动续命未完成:', error);
+        } finally {
+            isBatchOperating = false;
+            releaseAutoRenewLock();
+        }
+    }
+
+    // ==========================================
+    // 6. Lifecycle & SPA Route Observer
     // ==========================================
 
     function checkAndMount() {
@@ -935,6 +1323,11 @@
         } catch (e) {}
 
         checkAndMount();
+
+        // 延迟启动后台自动续命巡检，避开首屏渲染与网络高峰
+        setTimeout(() => {
+            maybeRunAutoRenew();
+        }, CONFIG.autoRenewDelayMs);
 
         let scanTimer = null;
         const scheduleScan = () => {
@@ -968,13 +1361,17 @@
     // Export pure helpers for Node.js unit testing
     const exportedHelpers = {
         CONFIG,
+        DAY_MS,
+        STORAGE_KEYS,
         isKeywordShieldPage,
         getXsrfToken,
         parseImportKeywords,
         extractKeywordsFromCards,
         parseConfigFromScriptText,
         checkUserVipStatus,
-        buildRequestHeaders
+        buildRequestHeaders,
+        evaluateAutoRenewDecision,
+        formatAutoRenewStatus
     };
     if (typeof module !== 'undefined' && module.exports) {
         module.exports = exportedHelpers;

@@ -11,13 +11,16 @@ const scriptContent = fs.readFileSync(scriptPath, 'utf8');
 
 const {
     CONFIG,
+    DAY_MS,
     isKeywordShieldPage,
     getXsrfToken,
     parseImportKeywords,
     extractKeywordsFromCards,
     parseConfigFromScriptText,
     checkUserVipStatus,
-    buildRequestHeaders
+    buildRequestHeaders,
+    evaluateAutoRenewDecision,
+    formatAutoRenewStatus
 } = globalThis.__WEIBO_SHIELD_KEYWORD_INTERNALS__;
 
 test('Tampermonkey UserScript 元数据头部格式完整规范', () => {
@@ -32,7 +35,7 @@ test('Tampermonkey UserScript 元数据头部格式完整规范', () => {
     assert.match(scriptContent, /@grant\s+unsafeWindow/);
 });
 
-test('核心功能按钮与微博官方接口均已声明', () => {
+test('核心功能按钮、自动续命与毛玻璃 Toast 样式均已声明', () => {
     assert.ok(scriptContent.includes('https://weibo.com/ajax/setting/getFilteredWords'));
     assert.ok(scriptContent.includes('https://weibo.com/ajax/setting/updateBlockWords'));
     assert.ok(scriptContent.includes('https://weibo.com/ajax/setting/deleteFilteredWords'));
@@ -40,6 +43,9 @@ test('核心功能按钮与微博官方接口均已声明', () => {
     assert.ok(scriptContent.includes('一键「导出」'));
     assert.ok(scriptContent.includes('一键「导入」'));
     assert.ok(scriptContent.includes('一键「清空」'));
+    assert.ok(scriptContent.includes('自动「续命」'));
+    assert.ok(scriptContent.includes('.weibo-shield-toast'));
+    assert.ok(scriptContent.includes('backdrop-filter: blur(16px)'));
 });
 
 test('isKeywordShieldPage 路由判断逻辑准确识别屏蔽词页与非屏蔽词页', () => {
@@ -107,4 +113,62 @@ test('buildRequestHeaders 生成合法的请求头且不包含浏览器禁止头
     assert.equal('origin' in headers, false);
     assert.equal('user-agent' in headers, false);
     assert.equal(CONFIG.requestDelayMs, 500);
+    assert.equal(CONFIG.autoRenewMinIntervalDays, 15);
+    assert.equal(CONFIG.autoRenewTriggerDays, 20);
+});
+
+test('evaluateAutoRenewDecision 严格遵守「默认开启、15天冷却上限、超20天触发」规则', () => {
+    const now = 1795000000000;
+
+    // 1. 默认开启，且从未记录过续命时间 -> 首次运行立即触发
+    const firstRun = evaluateAutoRenewDecision({ now });
+    assert.equal(firstRun.shouldRun, true);
+    assert.equal(firstRun.reason, 'first_run');
+
+    // 2. 开关被用户关闭 -> 不触发
+    const disabled = evaluateAutoRenewDecision({
+        enabled: false,
+        lastRenewAt: now - 30 * DAY_MS,
+        now
+    });
+    assert.equal(disabled.shouldRun, false);
+    assert.equal(disabled.reason, 'disabled');
+
+    // 3. 距离上次自动续命不足 15 天（即使传入异常的旧 lastRenewAt）-> 15 天冷却保护生效
+    const cooldown = evaluateAutoRenewDecision({
+        enabled: true,
+        lastRenewAt: now - 25 * DAY_MS,
+        lastAutoRenewAt: now - 10 * DAY_MS,
+        now
+    });
+    assert.equal(cooldown.shouldRun, false);
+    assert.equal(cooldown.reason, 'cooldown_15d');
+
+    // 4. 距离上次续命 18 天（超过 15 天冷却，但未满 20 天阈值）-> 不触发
+    const within20d = evaluateAutoRenewDecision({
+        enabled: true,
+        lastRenewAt: now - 18 * DAY_MS,
+        lastAutoRenewAt: now - 18 * DAY_MS,
+        now
+    });
+    assert.equal(within20d.shouldRun, false);
+    assert.equal(within20d.reason, 'within_20d');
+
+    // 5. 距离上次续命满 20 天（且距上次自动执行已满 15 天）-> 自动触发一轮
+    const overdue20d = evaluateAutoRenewDecision({
+        enabled: true,
+        lastRenewAt: now - 20.5 * DAY_MS,
+        lastAutoRenewAt: now - 20.5 * DAY_MS,
+        now
+    });
+    assert.equal(overdue20d.shouldRun, true);
+    assert.equal(overdue20d.reason, 'overdue_20d');
+});
+
+test('formatAutoRenewStatus 正确格式化上次续命时间提示', () => {
+    const now = new Date('2026-11-20T12:00:00Z').getTime();
+
+    assert.match(formatAutoRenewStatus(0, now), /尚未记录续命时间/);
+    assert.match(formatAutoRenewStatus(now - 2 * 60 * 60 * 1000, now), /^上次续命：今天 \(\d{4}-\d{2}-\d{2}\)$/);
+    assert.match(formatAutoRenewStatus(now - 21 * DAY_MS, now), /^上次续命：21 天前 \(\d{4}-\d{2}-\d{2}\)$/);
 });
